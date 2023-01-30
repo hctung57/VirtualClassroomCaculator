@@ -1,5 +1,6 @@
 from kubernetes import client, config
 import subprocess
+from datetime import datetime
 config.load_kube_config()
 ApiV1 = client.CoreV1Api()
 AppV1 = client.AppsV1Api()
@@ -14,10 +15,21 @@ class KubernetesPod:
         self.sum_pod_container = sum_pod_container
         self.number_container_ready = number_container_ready
 
+# NOTE: Event of pod
+
+
+class PodEvents:
+    def __init__(self, pod_name, event_time, event, event_message) -> None:
+        self.pod_name = pod_name
+        self.event_time = event_time
+        self.event = event
+        self.event_message = event_message
+
 
 def list_namespaced_pod_status(target_namespace: str = "default"):
     list_pod_status = []
     api_get_pods_response = ApiV1.list_namespaced_pod(target_namespace)
+    print(api_get_pods_response)
     for pod in api_get_pods_response.items:
         current_pod_name = pod.metadata.name
         current_node_name = pod.spec.node_name
@@ -33,21 +45,64 @@ def list_namespaced_pod_status(target_namespace: str = "default"):
             current_pod_state = str(pod.status.phase)
         sum_pod_container = len(pod.status.container_statuses)
         number_container_ready = 0
-        if pod != None:
-            for container in pod.status.container_statuses:
-                if container.ready == True:
-                    number_container_ready += 1
+        for container in pod.status.container_statuses:
+            if container.ready == True:
+                number_container_ready += 1
         list_pod_status.append(KubernetesPod(
             current_pod_name, current_pod_state, current_pod_ip, current_node_name, sum_pod_container, number_container_ready))
     return list_pod_status
 
 
+def get_number_namespaced_pod_through_status(target_status: str, target_namespace: str = "default"):
+    count = 0
+    list_pod = list_namespaced_pod_status(target_namespace)
+    for pod in list_pod:
+        if pod.pod_status == target_status:
+            count += 1
+    return count
+
+
+# NOTE: get event of pod over  pod's name
+#      return array of PodEvents class
+
+def list_namespaced_event(target_pod_name: str, target_namespace: str = "default"):
+    list_pod_event = []
+    events_response = ApiV1.list_namespaced_event(
+        target_namespace, field_selector=f'involvedObject.name={target_pod_name}')
+    for event in events_response.items:
+        current_event_time = event.first_timestamp
+        current_event = event.reason
+        current_event_message = event.message
+        if current_event_time != None:
+            current_event_time = current_event_time.timestamp()
+        list_pod_event.append(PodEvents(target_pod_name, current_event_time,
+                                        current_event, current_event_message))
+    return list_pod_event
+
+# NOTE:- check if the image image in the pod pulled since pod started
+#      - check if the image image in the pod pulled since a timestamp (optional)
+#      - return True or False
+def check_pod_image_pulled(target_pod: str, start_timeline: datetime = None):
+    is_pulled = False
+    events = list_namespaced_event(target_pod)
+    for event in events:
+        if start_timeline != None and event.event_time != None:
+            if event.event_time < start_timeline.timestamp():
+                continue
+        if event.event == "Pulled":
+            is_pulled = True
+            break
+    return is_pulled
+
+#NOTE: return an array of object endpoint
+#      only working with serverless testcase
+#      not true with other testcase 
 def list_namespaced_endpoints(target_namespce: str = "default"):
     list_endpoints = []
     get_endpoint_response = ApiV1.list_namespaced_endpoints(target_namespce)
     for endpoint in get_endpoint_response.items:
         entry = {
-            "endpoint_name":endpoint.metadata.name,
+            "endpoint_name": endpoint.metadata.name,
             "endpoints": []
         }
         list_subnet = []
@@ -62,21 +117,13 @@ def list_namespaced_endpoints(target_namespce: str = "default"):
                     for port in subnet.ports:
                         ports.append(port.port)
                 address = {
-                    "ip":ips,
-                    "port":ports
+                    "ip": ips,
+                    "port": ports
                 }
                 list_subnet.append(address)
         entry["endpoints"] = list_subnet
         list_endpoints.append(entry)
     return list_endpoints
-
-def get_number_namespaced_pod_through_status(target_status: str, target_namespace: str = "default"):
-    count = 0
-    list_pod = list_namespaced_pod_status(target_namespace)
-    for pod in list_pod:
-        if pod.pod_status == target_status:
-            count += 1
-    return count
 
 
 def create_namespaced_service(target_service: str, target_ID: str,
@@ -162,12 +209,34 @@ def delete_namespaced_service(target_service: str, target_ID: str, target_namesp
 
 
 def connect_get_namespaced_pod_exec(target_command: str, target_name: str):
-    command = "sudo kubectl exec -it {} -- {} ".format(
-        target_name, target_command)
+    command = "kubectl exec -it {} -- {} ".format(target_name, target_command)
     output = subprocess.check_output(['/bin/bash', '-c', command])
     print(output)
 
-
 a = list_namespaced_endpoints()
 print(a)
+for i in a:
+    print(i['endpoint_name'])
+    for j in i['endpoints']:
+        print(j['ip'])
+        print(j['port'])
 
+# a = check_pod_image_pulled(
+#     "source-streaming-deployment-7c57ffbd6b-s45nm")
+# print(a)
+# a = list_namespaced_event("source-streaming-deployment-7c57ffbd6b-xxzm4")
+# i: PodEvents
+# for i in a:
+#     print(i.pod_name)
+#     print(i.event_time)
+#     print(i.event_message)
+#     print(i.event)
+
+
+# a = list_namespaced_pod_status()
+# i:KubernetesPod
+# for i in a:
+#     print(i.pod_name)
+#     print(i.pod_status)
+#     print(i.pod_ip)
+#     print("{}/{}".format(i.number_container_ready,i.sum_pod_container))
